@@ -105,7 +105,10 @@ class AutoPaginateNode(template.Node):
         self.orphans = orphans
         self.context_var = context_var
         self.multiple_paginations = multiple_paginations
-        self.suffix_var = template.Variable(suffix_var)
+        if suffix_var:
+            self.suffix_var = template.Variable(suffix_var)
+        else:
+            self.suffix_var = None
 
     def render(self, context):
         if self.suffix_var:
