@@ -21,18 +21,21 @@ def do_autopaginate(parser, token):
     """
     Splits the arguments to the autopaginate tag and formats them correctly.
     """
-    
-    # Check whether there are any other autopaginations are later in this template
-    expr = lambda obj: (obj.token_type == TOKEN_BLOCK and \
-        len(obj.split_contents()) > 0 and obj.split_contents()[0] == "autopaginate")
-    multiple_paginations = len(filter(expr, parser.tokens)) > 0
-    
+
+    multiple_paginations = False
+
     split = token.split_contents()
     as_index = None
+    suffix_index = None
     context_var = None
+    suffix_var = None
     for i, bit in enumerate(split):
         if bit == 'as':
             as_index = i
+            break
+    for i, bit in enumerate(split):
+        if bit == 'suffix':
+            suffix_index = i
             break
     if as_index is not None:
         try:
@@ -41,12 +44,27 @@ def do_autopaginate(parser, token):
             raise template.TemplateSyntaxError("Context variable assignment " +
                 "must take the form of {%% %r object.example_set.all ... as " +
                 "context_var_name %%}" % split[0])
+    if suffix_index is not None:
+        try:
+            suffix_var = split[suffix_index + 1]
+        except IndexError:
+            raise template.TemplateSyntaxError("Context variable assignment " +
+                "must take the form of {%% %r object.example_set.all ... suffix " +
+                "context_var_name %%}" % split[0])
+
+    if as_index is not None:
         del split[as_index:as_index + 2]
+    if suffix_index is not None:
+        del split[split.index('suffix'):split.index('suffix') + 2]
+        multiple_paginations = True
+
     if len(split) == 2:
-        return AutoPaginateNode(split[1], multiple_paginations=multiple_paginations)
+        return AutoPaginateNode(split[1], multiple_paginations=multiple_paginations,
+            suffix_var=suffix_var)
     elif len(split) == 3:
-        return AutoPaginateNode(split[1], paginate_by=split[2], 
-            context_var=context_var, multiple_paginations=multiple_paginations)
+        return AutoPaginateNode(split[1], paginate_by=split[2],
+            context_var=context_var, multiple_paginations=multiple_paginations,
+            suffix_var=suffix_var)
     elif len(split) == 4:
         try:
             orphans = int(split[3])
@@ -54,30 +72,31 @@ def do_autopaginate(parser, token):
             raise template.TemplateSyntaxError(u'Got %s, but expected integer.'
                 % split[3])
         return AutoPaginateNode(split[1], paginate_by=split[2], orphans=orphans,
-            context_var=context_var, multiple_paginations=multiple_paginations)
+            context_var=context_var, multiple_paginations=multiple_paginations,
+            suffix_var=suffix_var)
     else:
-        raise template.TemplateSyntaxError('%r tag takes one required ' +
-            'argument and one optional argument' % split[0])
+        raise template.TemplateSyntaxError(('%r tag takes one required '
+            'argument and one optional argument -- got %r') % (split[0], str(split)))
 
 class AutoPaginateNode(template.Node):
     """
     Emits the required objects to allow for Digg-style pagination.
-    
+
     First, it looks in the current context for the variable specified, and using
-    that object, it emits a simple ``Paginator`` and the current page object 
+    that object, it emits a simple ``Paginator`` and the current page object
     into the context names ``paginator`` and ``page_obj``, respectively.
-    
+
     It will then replace the variable specified with only the objects for the
     current page.
-    
+
     .. note::
-        
+
         It is recommended to use *{% paginate %}* after using the autopaginate
         tag.  If you choose not to use *{% paginate %}*, make sure to display the
         list of available pages, or else the application may seem to be buggy.
     """
     def __init__(self, queryset_var, multiple_paginations, paginate_by=DEFAULT_PAGINATION,
-        orphans=DEFAULT_ORPHANS, context_var=None):
+        orphans=DEFAULT_ORPHANS, context_var=None, suffix_var=None):
         self.queryset_var = template.Variable(queryset_var)
         if isinstance(paginate_by, int):
             self.paginate_by = paginate_by
@@ -86,13 +105,14 @@ class AutoPaginateNode(template.Node):
         self.orphans = orphans
         self.context_var = context_var
         self.multiple_paginations = multiple_paginations
+        self.suffix_var = template.Variable(suffix_var)
 
     def render(self, context):
-        if self.multiple_paginations or context.has_key('paginator'):
-            page_suffix = '_%s' % self.queryset_var
+        if self.suffix_var:
+            page_suffix = '_%s' % self.suffix_var.resolve(context)
         else:
             page_suffix = ''
-        
+
         key = self.queryset_var.var
         value = self.queryset_var.resolve(context)
         if isinstance(self.paginate_by, int):
@@ -125,20 +145,20 @@ def paginate(context, window=DEFAULT_WINDOW, hashtag=''):
     Digg-like display of the available pages, given the current page.  If there
     are too many pages to be displayed before and after the current page, then
     elipses will be used to indicate the undisplayed gap between page numbers.
-    
+
     Requires one argument, ``context``, which should be a dictionary-like data
     structure and must contain the following keys:
-    
+
     ``paginator``
         A ``Paginator`` or ``QuerySetPaginator`` object.
-    
+
     ``page_obj``
-        This should be the result of calling the page method on the 
+        This should be the result of calling the page method on the
         aforementioned ``Paginator`` or ``QuerySetPaginator`` object, given
         the current page.
-    
+
     This same ``context`` dictionary-like data structure may also include:
-    
+
     ``getvars``
         A dictionary of all of the **GET** parameters in the current request.
         This is useful to maintain certain types of state, even when requesting
@@ -202,7 +222,7 @@ def paginate(context, window=DEFAULT_WINDOW, hashtag=''):
             second_list.sort()
             diff = second_list[0] - pages[-1]
             # If there is a gap of two, between the last page of the current
-            # set and the first page of the last set, then we're missing a 
+            # set and the first page of the last set, then we're missing a
             # page.
             if diff == 2:
                 pages.append(second_list[0] - 1)
